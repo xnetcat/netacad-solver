@@ -9,8 +9,12 @@
     "48": "icon-48.png",
     "128": "icon-128.png"
   },
-  "permissions": ["webRequest", "storage", "tabs"],
-  "host_permissions": ["https://netacad.com/*", "https://www.netacad.com/*"],
+  "permissions": ["webRequest", "storage", "tabs", "scripting", "activeTab"],
+  "host_permissions": [
+    "https://netacad.com/*",
+    "https://www.netacad.com/*",
+    "https://*.netacad.com/*"
+  ],
   "action": {
     "default_popup": "popup.html",
     "default_icon": {

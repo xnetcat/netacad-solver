@@ -237,3 +237,4 @@ When a new version is released:
 
 **Need more help?** Check out the [AUTO_SOLVE_GUIDE.md](AUTO_SOLVE_GUIDE.md) for detailed auto-solve instructions!
 
+

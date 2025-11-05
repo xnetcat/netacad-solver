@@ -98,8 +98,72 @@ async function updateStatus() {
         "[NetAcad Solver Popup] Message error (content script may not be ready):",
         messageError.message
       );
-      setStatus("inactive", "Loading extension...");
-      document.getElementById("startStopBtn").disabled = true;
+
+      const errorMsg = String(messageError?.message || "");
+      if (
+        errorMsg.includes("Receiving end does not exist") ||
+        errorMsg.includes("Could not establish connection")
+      ) {
+        try {
+          console.log(
+            "[NetAcad Solver Popup] Attempting to inject content script via scripting.executeScript..."
+          );
+          await browser.scripting.executeScript({
+            target: { tabId: currentTab.id, allFrames: true },
+            files: ["content.js"],
+          });
+
+          console.log(
+            "[NetAcad Solver Popup] Injection complete. Retrying getStatus..."
+          );
+          const response = await browser.tabs.sendMessage(currentTab.id, {
+            action: "getStatus",
+          });
+          console.log(
+            "[NetAcad Solver Popup] Received response after injection:",
+            response
+          );
+
+          if (response) {
+            questionCount = response.questionCount || 0;
+            isAutoSolving = response.isAutoSolving || false;
+            solvedCount = response.currentQuestion || 0;
+
+            document.getElementById("totalCount").textContent = questionCount;
+            document.getElementById("solvedCount").textContent = solvedCount;
+
+            if (questionCount === 0) {
+              setStatus("inactive", "Loading...");
+              document.getElementById("startStopBtn").disabled = true;
+            } else if (isAutoSolving) {
+              setStatus("active", "Solving...");
+              document.getElementById("startStopBtn").disabled = false;
+              document.getElementById("startStopBtn").textContent =
+                "Stop Auto-Solve";
+              document.getElementById("startStopBtn").classList.add("stop");
+              updateProgress(solvedCount, questionCount);
+            } else {
+              setStatus("ready", "Ready");
+              document.getElementById("startStopBtn").disabled = false;
+              document.getElementById("startStopBtn").textContent =
+                "Start Auto-Solve";
+              document.getElementById("startStopBtn").classList.remove("stop");
+            }
+          } else {
+            setStatus("inactive", "Waiting...");
+          }
+        } catch (injectError) {
+          console.log(
+            "[NetAcad Solver Popup] Injection retry failed:",
+            injectError?.message || injectError
+          );
+          setStatus("inactive", "Loading extension...");
+          document.getElementById("startStopBtn").disabled = true;
+        }
+      } else {
+        setStatus("inactive", "Loading extension...");
+        document.getElementById("startStopBtn").disabled = true;
+      }
     }
   } catch (error) {
     console.error("[NetAcad Solver Popup] Error updating status:", error);
