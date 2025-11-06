@@ -72,6 +72,29 @@ async function updateStatus() {
         document.getElementById("totalCount").textContent = questionCount;
         document.getElementById("solvedCount").textContent = solvedCount;
 
+        // Compose current question details
+        const active = response.activeQuestion || 0;
+        const remaining =
+          typeof response.remaining === "number"
+            ? response.remaining
+            : Math.max(0, (questionCount || 0) - (solvedCount || 0));
+        const unanswered =
+          typeof response.unanswered === "number" ? response.unanswered : null;
+
+        const currentEl = document.getElementById("currentQuestion");
+        if (questionCount > 0) {
+          currentEl.style.display = "block";
+          const parts = [
+            active ? `Current: Q${active} / ${questionCount}` : null,
+            `Solved: ${solvedCount}`,
+            `Remaining: ${remaining}`,
+            unanswered != null ? `Unanswered: ${unanswered}` : null,
+          ].filter(Boolean);
+          currentEl.textContent = parts.join(" · ");
+        } else {
+          currentEl.style.display = "none";
+        }
+
         if (questionCount === 0) {
           setStatus("inactive", "Loading...");
           document.getElementById("startStopBtn").disabled = true;
@@ -185,13 +208,6 @@ function updateProgress(current, total) {
   document.getElementById("progressBar").style.width = percentage + "%";
   document.getElementById("progressText").textContent = percentage + "%";
   document.getElementById("solvedCount").textContent = current;
-
-  if (current > 0) {
-    document.getElementById("currentQuestion").style.display = "block";
-    document.getElementById(
-      "currentQuestion"
-    ).textContent = `Question ${current} of ${total}`;
-  }
 }
 
 // Show message

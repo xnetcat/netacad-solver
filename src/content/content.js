@@ -53,6 +53,13 @@ browser.runtime.onMessage.addListener((request, sender, sendResponse) => {
         questionCount: totalQuestionsExpected || questions.length,
         isAutoSolving: isAutoSolving,
         currentQuestion: overallSolvedCount,
+        activeQuestion:
+          getQuestionNumberFromTitle() || getActiveBlockIndex() || 0,
+        remaining: Math.max(
+          0,
+          (totalQuestionsExpected || questions.length) - overallSolvedCount
+        ),
+        unanswered: getUnansweredCount(),
       };
       console.log("[NetAcad Solver] Sending status:", status);
       sendResponse(status);
@@ -1012,6 +1019,22 @@ const getQuestionNumberFromTitle = () => {
   }
 };
 
+const getUnansweredCount = () => {
+  try {
+    const buttons = [
+      ...(deepHtmlSearch(
+        document,
+        ".attempted-blocks-inner button.block-button",
+        true,
+        200
+      ) || []),
+    ];
+    return buttons.filter((b) => b.classList?.contains("highlight")).length;
+  } catch (e) {
+    return 0;
+  }
+};
+
 const waitForNextQuestionLoad = async (
   previousIndex,
   previousQuestionNumber,
@@ -1044,27 +1067,20 @@ const advanceToNextQuestion = async () => {
   return await waitForNextQuestionLoad(prevIndex, prevQNum, 5000);
 };
 
-// Try to navigate to next question (exam mode): click submit button or next arrow if enabled
+// Try to navigate to next question strictly via Submit (no arrow navigation)
 const clickSubmitOrNext = () => {
   try {
     const submitBtn = deepHtmlSearch(document, ".submit-button");
     if (submitBtn) {
-      submitBtn.click();
-      return true;
-    }
-
-    const nextArrow = deepHtmlSearch(
-      document,
-      'button[data-blockstrip-slider="right"]'
-    );
-    if (
-      nextArrow &&
-      nextArrow.getAttribute &&
-      nextArrow.getAttribute("aria-disabled") !== "true" &&
-      !nextArrow.classList?.contains("is-disabled")
-    ) {
-      nextArrow.click();
-      return true;
+      const disabledAttr = submitBtn.getAttribute
+        ? submitBtn.getAttribute("disabled")
+        : null;
+      const isDisabled =
+        disabledAttr !== null || submitBtn.classList?.contains("is-disabled");
+      if (!isDisabled) {
+        submitBtn.click();
+        return true;
+      }
     }
   } catch (e) {}
   return false;
