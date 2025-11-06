@@ -11,6 +11,7 @@ const componentUrls = [];
 let iteration = 0;
 let totalQuestionsExpected = 0; // total count across the module/test (from API/DOM)
 let overallSolvedCount = 0; // progress across pages
+let startedByGui = false; // set only when popup triggers start
 
 // Auto-solver state
 let isAutoSolving = false;
@@ -247,14 +248,6 @@ const setQuestionElements = () => {
           question.id,
           question.answersLength
         ) || [];
-      // After a user selects an answer, advance to next (exam mode)
-      try {
-        question.inputs.forEach(({ label }) => {
-          label?.addEventListener("click", () => {
-            setTimeout(() => clickSubmitOrNext(), 150);
-          });
-        });
-      } catch (e) {}
     } else if (question.questionType === "match") {
       question.questionElement = findQuestionElement(question.questionDiv);
       question.inputs =
@@ -264,19 +257,16 @@ const setQuestionElements = () => {
       setDropdownSelectQuestions(question);
       question.skip = true;
     } else if (question.questionType === "yesNo") {
-      // yes - no questions are dynamic - they use the same elements but changes attributes
-      initYeNoQuestions(question);
+      // No listeners; solver will act programmatically
       question.skip = true;
     } else if (question.questionType === "openTextInput") {
-      // buttons are static but questions are moving around
-      setOpenTextInputQuestions(question);
+      // No listeners; solver will act programmatically
       question.skip = true;
     } else if (question.questionType === "fillBlanks") {
-      setFillBlanksQuestions(question);
+      // No listeners; solver will act programmatically
       question.skip = true;
     } else if (question.questionType === "tableDropdown") {
-      // when there is no description in the table down only mouseover works
-      setTableDropdownQuestions(question);
+      // No listeners; solver will act programmatically
       question.skip = true;
     }
 
@@ -561,89 +551,7 @@ const setTableDropdownQuestions = (question) => {
   });
 };
 
-const initClickListeners = () => {
-  const currentIteration = iteration;
-
-  questions.forEach((question) => {
-    if (question.skip) return;
-
-    question.questionElement?.addEventListener("click", () => {
-      if (currentIteration !== iteration) return;
-
-      if (question.questionType === "basic") {
-        const component = components.find((c) => c._id === question.id);
-
-        question.inputs.forEach(({ input, label }, i) => {
-          if (input.checked) {
-            label.click();
-          }
-
-          if (component._items[i]._shouldBeSelected) {
-            setTimeout(() => label.click(), 10);
-          }
-        });
-        // After applying selection, try to advance
-        setTimeout(() => clickSubmitOrNext(), 150);
-      } else if (question.questionType === "match") {
-        question.inputs.forEach((input) => {
-          input[0].click();
-          input[1].click();
-        });
-        setTimeout(() => clickSubmitOrNext(), 150);
-      } else if (question.questionType === "dropdownSelect") {
-        question.inputs[0]?.click();
-        setTimeout(() => clickSubmitOrNext(), 150);
-      }
-    });
-  });
-};
-
-const initHoverListeners = () => {
-  const currentIteration = iteration;
-
-  questions.forEach((question) => {
-    if (question.skip) return;
-
-    const component = components.find((c) => c._id === question.id);
-
-    if (question.questionType === "basic") {
-      question.inputs.forEach(({ input, label }, i) => {
-        label?.addEventListener("mouseover", (e) => {
-          if (currentIteration !== iteration) return;
-
-          if (e.ctrlKey) {
-            if (input.checked) {
-              label.click();
-            }
-
-            if (component._items[i]._shouldBeSelected) {
-              setTimeout(() => label.click(), 10);
-            }
-          }
-        });
-      });
-    } else if (question.questionType === "match") {
-      question.inputs.forEach((input) => {
-        input[0]?.addEventListener("mouseover", (e) => {
-          if (currentIteration !== iteration) return;
-
-          if (e.ctrlKey) {
-            input[0].click();
-            input[1].click();
-          }
-        });
-      });
-    } else if (question.questionType === "dropdownSelect") {
-      question.inputs[0]?.addEventListener("mouseover", (e) => {
-        if (currentIteration !== iteration) return;
-
-        if (e.ctrlKey) {
-          question.inputs[0].click();
-        }
-      });
-    }
-  });
-};
+// Removed interactive listeners to avoid ghost interactions; solver acts only on explicit start
 
 const removeTagsFromString = (string) =>
   string.replace(/<[^>]*>?/gm, "").trim();
@@ -668,8 +576,6 @@ const main = async () => {
   iteration++;
   await setQuestionSections();
   setQuestionElements();
-  initClickListeners();
-  initHoverListeners();
 
   // Notify popup that questions are loaded
   console.log(`[NetAcad Solver] ✅ Loaded ${questions.length} questions`);
@@ -678,15 +584,8 @@ const main = async () => {
     questions.map((q) => q.questionType)
   );
 
-  // Initial pass: ensure all visible questions have correct answers checked (no navigation)
-  try {
-    for (const q of questions) {
-      await solveQuestion(q, { advance: false, ignoreSkip: true });
-    }
-  } catch (e) {}
-
-  // If autosolve is active (e.g., after navigation), restart from first on this page
-  if (isAutoSolving) {
+  // If autosolve is active (started via GUI), restart on this page
+  if (isAutoSolving && startedByGui) {
     autoSolveIndex = 0;
     setTimeout(autoSolveNext, 250);
   }
@@ -1038,6 +937,7 @@ const startAutoSolve = () => {
   isAutoSolving = true;
   autoSolveIndex = 0;
   overallSolvedCount = 0;
+  startedByGui = true;
 
   console.log(
     `[NetAcad Solver] 🚀 Starting auto-solve for ${questions.length} questions`
@@ -1052,8 +952,15 @@ const startAutoSolve = () => {
     })
     .catch((e) => console.log("[NetAcad Solver] Failed to notify popup:", e));
 
-  // Always navigate to first question if possible
-  goToFirstQuestion();
+  // Always navigate to first question if possible and wait for load
+  try {
+    const prevIdx = getActiveBlockIndex();
+    const prevQNum = getQuestionNumberFromTitle();
+    goToFirstQuestion();
+    setTimeout(() => {
+      waitForNextQuestionLoad(prevIdx, prevQNum, 5000);
+    }, 50);
+  } catch (e) {}
 
   // If current page already has questions, begin immediately, otherwise
   // suspendMain() -> main() will restart autosolve when ready
