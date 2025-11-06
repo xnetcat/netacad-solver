@@ -61,3 +61,4 @@ Then reload the extension in your browser's extension manager.
 Extensions update automatically, or check for updates manually in the store.
 
 
+

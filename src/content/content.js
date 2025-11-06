@@ -783,7 +783,7 @@ const solveQuestion = async (
       }
       console.log("[NetAcad Solver] ✓ Basic question solved");
       if (options.advance) {
-        setTimeout(() => clickSubmitOrNext(), 200);
+        await advanceToNextQuestion();
       }
       return true;
     } else if (question.questionType === "match") {
@@ -806,7 +806,7 @@ const solveQuestion = async (
       }
       console.log("[NetAcad Solver] ✓ Match question solved");
       if (options.advance) {
-        setTimeout(() => clickSubmitOrNext(), 200);
+        await advanceToNextQuestion();
       }
       return true;
     } else if (question.questionType === "dropdownSelect") {
@@ -823,7 +823,7 @@ const solveQuestion = async (
       }
       console.log("[NetAcad Solver] ✓ Dropdown question solved");
       if (options.advance) {
-        setTimeout(() => clickSubmitOrNext(), 200);
+        await advanceToNextQuestion();
       }
       return true;
     } else if (question.questionType === "yesNo") {
@@ -840,7 +840,7 @@ const solveQuestion = async (
         const noBtn = deepHtmlSearch(question.questionDiv, ".user_selects_no");
         if (item._shouldBeSelected && yesBtn) yesBtn.click();
         if (!item._shouldBeSelected && noBtn) noBtn.click();
-        if (options.advance) setTimeout(() => clickSubmitOrNext(), 200);
+        if (options.advance) await advanceToNextQuestion();
         console.log("[NetAcad Solver] ✓ Yes/No question solved");
         return true;
       } catch (e) {
@@ -884,7 +884,7 @@ const solveQuestion = async (
           matchEl?.click();
           await sleep(50);
         }
-        if (options.advance) setTimeout(() => clickSubmitOrNext(), 200);
+        if (options.advance) await advanceToNextQuestion();
         console.log("[NetAcad Solver] ✓ Fill blanks question solved");
         return true;
       } catch (e) {
@@ -919,7 +919,7 @@ const solveQuestion = async (
           );
           if (target) target.click();
         });
-        if (options.advance) setTimeout(() => clickSubmitOrNext(), 200);
+        if (options.advance) await advanceToNextQuestion();
         console.log("[NetAcad Solver] ✓ Table dropdown question solved");
         return true;
       } catch (e) {
@@ -956,7 +956,7 @@ const solveQuestion = async (
             await sleep(30);
           }
         }
-        if (options.advance) setTimeout(() => clickSubmitOrNext(), 200);
+        if (options.advance) await advanceToNextQuestion();
         console.log("[NetAcad Solver] ✓ Open text input question solved");
         return true;
       } catch (e) {
@@ -1077,6 +1077,65 @@ const stopAutoSolve = () => {
 };
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+// Helpers to detect current/next question state in the UI
+const getActiveBlockIndex = () => {
+  try {
+    const active = deepHtmlSearch(document, "button.block-button.active-block");
+    if (!active) return null;
+    const val = active.getAttribute("data-index");
+    const n = parseInt(val, 10);
+    return Number.isNaN(n) ? null : n;
+  } catch (e) {
+    return null;
+  }
+};
+
+const getQuestionNumberFromTitle = () => {
+  try {
+    const title = deepHtmlSearch(
+      document,
+      ".component__title-inner.mcq__title-inner"
+    );
+    const text = title?.textContent || "";
+    const m = text.match(/Question\s+(\d+)/i);
+    return m ? parseInt(m[1], 10) : null;
+  } catch (e) {
+    return null;
+  }
+};
+
+const waitForNextQuestionLoad = async (
+  previousIndex,
+  previousQuestionNumber,
+  timeoutMs = 5000
+) => {
+  const start = Date.now();
+  while (Date.now() - start < timeoutMs) {
+    await sleep(100);
+    const idx = getActiveBlockIndex();
+    const qNum = getQuestionNumberFromTitle();
+
+    const indexChanged =
+      previousIndex != null && idx != null && idx !== previousIndex;
+    const titleChanged =
+      previousQuestionNumber != null &&
+      qNum != null &&
+      qNum !== previousQuestionNumber;
+
+    if (indexChanged || titleChanged) return true;
+  }
+  return false;
+};
+
+const advanceToNextQuestion = async () => {
+  const prevIndex = getActiveBlockIndex();
+  const prevQNum = getQuestionNumberFromTitle();
+  const clicked = clickSubmitOrNext();
+  if (!clicked) return false;
+  await sleep(100);
+  return await waitForNextQuestionLoad(prevIndex, prevQNum, 5000);
+};
 
 // Try to navigate to next question (exam mode): click submit button or next arrow if enabled
 const clickSubmitOrNext = () => {
