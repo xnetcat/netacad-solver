@@ -12,6 +12,7 @@ let iteration = 0;
 let totalQuestionsExpected = 0; // total count across the module/test (from API/DOM)
 let overallSolvedCount = 0; // progress across pages
 let startedByGui = false; // set only when popup triggers start
+let lastActiveQuestion = null; // tracks visible question number/index
 
 // Auto-solver state
 let isAutoSolving = false;
@@ -261,55 +262,18 @@ const setQuestionElements = () => {
         findAnswerInputsMatch(question.questionDiv, question.answersLength) ||
         [];
     } else if (question.questionType === "dropdownSelect") {
-      setDropdownSelectQuestions(question);
-      question.skip = true;
+      // Handled in solveQuestion
     } else if (question.questionType === "yesNo") {
-      // No listeners; solver will act programmatically
-      question.skip = true;
+      // Handled in solveQuestion
     } else if (question.questionType === "openTextInput") {
-      // No listeners; solver will act programmatically
-      question.skip = true;
+      // Handled in solveQuestion
     } else if (question.questionType === "fillBlanks") {
-      // No listeners; solver will act programmatically
-      question.skip = true;
+      // Handled in solveQuestion
     } else if (question.questionType === "tableDropdown") {
-      // No listeners; solver will act programmatically
-      question.skip = true;
+      // Handled in solveQuestion
     }
 
     return question;
-  });
-};
-
-const setDropdownSelectQuestions = (question) => {
-  question.items.forEach((item, i) => {
-    const questionDiv = deepHtmlSearch(
-      question.questionDiv,
-      `[index="${i}"]`,
-      true
-    );
-    const questionElement = deepHtmlFindByTextContent(
-      questionDiv,
-      item.text.trim()
-    );
-
-    for (const [index, option] of item._options.entries()) {
-      if (option._isCorrect) {
-        const optionElement = deepHtmlSearch(
-          questionDiv,
-          `#dropdown__item-index-${index}`,
-          true
-        );
-
-        questions.push({
-          questionDiv,
-          questionElement,
-          inputs: [optionElement],
-          questionType: question.questionType,
-        });
-        return;
-      }
-    }
   });
 };
 
@@ -591,10 +555,9 @@ const main = async () => {
     questions.map((q) => q.questionType)
   );
 
-  // If autosolve is active (started via GUI), restart on this page
+  // If autosolve is active, continue solving
   if (isAutoSolving && startedByGui) {
-    autoSolveIndex = 0;
-    setTimeout(autoSolveNext, 250);
+    setTimeout(autoSolveNext, 500);
   }
 };
 
@@ -673,7 +636,10 @@ const solveQuestion = async (
       for (let i = 0; i < question.inputs.length; i++) {
         const { input, label } = question.inputs[i];
 
-        if (component._items[i]._shouldBeSelected) {
+        const shouldSelect =
+          component._items[i]._shouldBeSelected === true ||
+          component._items[i]._isCorrect === true;
+        if (shouldSelect) {
           if (!input.checked) {
             console.log("[NetAcad Solver] Selecting answer", i);
             label.click();
@@ -718,15 +684,38 @@ const solveQuestion = async (
     } else if (question.questionType === "dropdownSelect") {
       console.log("[NetAcad Solver] Solving dropdown question");
 
-      if (question.questionElement) {
-        question.questionElement.click();
-        await sleep(300);
+      for (let i = 0; i < question.items.length; i++) {
+        const item = question.items[i];
+        const subQuestionDiv = deepHtmlSearch(
+          question.questionDiv,
+          `[index="${i}"]`,
+          true
+        );
+        if (!subQuestionDiv) continue;
+
+        const triggerElement = deepHtmlFindByTextContent(
+          subQuestionDiv,
+          item.text.trim()
+        );
+        if (triggerElement) {
+          triggerElement.click();
+          await sleep(300);
+        }
+
+        const correctOptionIndex = item._options.findIndex((o) => o._isCorrect);
+        if (correctOptionIndex !== -1) {
+          const optionElement = deepHtmlSearch(
+            subQuestionDiv,
+            `#dropdown__item-index-${correctOptionIndex}`,
+            true
+          );
+          if (optionElement) {
+            optionElement.click();
+            await sleep(200);
+          }
+        }
       }
 
-      if (question.inputs[0]) {
-        question.inputs[0].click();
-        await sleep(200);
-      }
       console.log("[NetAcad Solver] ✓ Dropdown question solved");
       if (options.advance) {
         await advanceToNextQuestion();
@@ -887,41 +876,37 @@ const solveQuestion = async (
 
 const autoSolveNext = async () => {
   if (!isAutoSolving) return;
-  if (autoSolveIndex >= questions.length) {
-    console.log(
-      "[NetAcad Solver] Page questions completed. Attempting to navigate..."
-    );
-    const navigated = clickSubmitOrNext();
-    if (!navigated) {
-      console.log(
-        "[NetAcad Solver] No next page detected. Auto-solve complete."
-      );
-      isAutoSolving = false;
-      browser.runtime
-        .sendMessage({
-          action: "autoSolveComplete",
-          questionCount:
-            totalQuestionsExpected || overallSolvedCount || questions.length,
-        })
-        .catch(() => {});
-    }
+
+  // Step 1: Find current visible question from DOM
+  const currentQuestionDiv = deepHtmlSearch(
+    document,
+    ".component.mcq.is-question"
+  );
+  if (!currentQuestionDiv) {
+    console.log("[NetAcad Solver] No question visible, stopping");
+    isAutoSolving = false;
     return;
   }
 
-  const question = questions[autoSolveIndex];
-
-  console.log(
-    `[NetAcad Solver] Solving question ${autoSolveIndex + 1}/${
-      questions.length
-    }`
+  // Step 2: Find the question in our list
+  const question = questions.find((q) =>
+    currentQuestionDiv.classList.contains(q.id)
   );
 
-  const solved = await solveQuestion(question);
+  if (!question) {
+    console.log("[NetAcad Solver] Question not in components, skipping");
+    clickSubmitOrNext();
+    if (isAutoSolving) setTimeout(autoSolveNext, autoSolveSpeed);
+    return;
+  }
 
-  autoSolveIndex++;
+  console.log("[NetAcad Solver] Solving question:", question.id);
+
+  // Step 3: Solve it (this will select answers AND click submit)
+  const solved = await solveQuestion(question);
   if (solved) overallSolvedCount++;
 
-  // Notify popup of progress
+  // Notify popup
   browser.runtime
     .sendMessage({
       action: "progress",
@@ -930,48 +915,52 @@ const autoSolveNext = async () => {
     })
     .catch(() => {});
 
-  // Continue with next question after delay
-  if (isAutoSolving) {
-    setTimeout(autoSolveNext, autoSolveSpeed);
+  // Step 4: Continue after delay
+  if (isAutoSolving) setTimeout(autoSolveNext, autoSolveSpeed);
+};
+
+const reinitQuestions = async () => {
+  try {
+    questions = [];
+    iteration++;
+    await setQuestionSections();
+    setQuestionElements();
+    console.log(
+      `[NetAcad Solver] ✅ Reloaded ${questions.length} questions after navigation`
+    );
+  } catch (e) {
+    console.log("[NetAcad Solver] Reinit failed:", e?.message || e);
   }
 };
 
 const startAutoSolve = () => {
   console.log("[NetAcad Solver] startAutoSolve called");
-  console.log("[NetAcad Solver] Questions available:", questions.length);
-  console.log("[NetAcad Solver] Components available:", components.length);
 
   isAutoSolving = true;
   autoSolveIndex = 0;
   overallSolvedCount = 0;
   startedByGui = true;
 
-  console.log(
-    `[NetAcad Solver] 🚀 Starting auto-solve for ${questions.length} questions`
-  );
+  console.log(`[NetAcad Solver] 🚀 Starting auto-solve`);
   console.log(`[NetAcad Solver] Speed: ${autoSolveSpeed}ms per question`);
 
   // Notify popup
   browser.runtime
     .sendMessage({
       action: "autoSolveStarted",
-      questionCount: questions.length,
+      questionCount: totalQuestionsExpected || questions.length,
     })
     .catch((e) => console.log("[NetAcad Solver] Failed to notify popup:", e));
 
-  // Always navigate to first question if possible and wait for load
-  try {
-    const prevIdx = getActiveBlockIndex();
-    const prevQNum = getQuestionNumberFromTitle();
-    goToFirstQuestion();
-    setTimeout(() => {
-      waitForNextQuestionLoad(prevIdx, prevQNum, 5000);
-    }, 50);
-  } catch (e) {}
-
-  // If current page already has questions, begin immediately, otherwise
-  // suspendMain() -> main() will restart autosolve when ready
-  if (questions.length > 0) {
+  // Check if we're on the intro/start screen
+  const startBtn = deepHtmlSearch(document, ".start-button.start");
+  if (startBtn) {
+    console.log("[NetAcad Solver] Clicking Start button");
+    startBtn.click();
+    // Wait for first question to load, then begin
+    setTimeout(autoSolveNext, 1000);
+  } else {
+    // Already in quiz, start immediately
     autoSolveNext();
   }
 };
@@ -1061,6 +1050,8 @@ const waitForNextQuestionLoad = async (
 const advanceToNextQuestion = async () => {
   const prevIndex = getActiveBlockIndex();
   const prevQNum = getQuestionNumberFromTitle();
+  // Wait up to 3s for submit to become enabled after selection
+  await waitForSubmitEnabled(3000);
   const clicked = clickSubmitOrNext();
   if (!clicked) return false;
   await sleep(100);
@@ -1083,6 +1074,25 @@ const clickSubmitOrNext = () => {
       }
     }
   } catch (e) {}
+  return false;
+};
+
+const waitForSubmitEnabled = async (timeoutMs = 3000) => {
+  const start = Date.now();
+  while (Date.now() - start < timeoutMs) {
+    try {
+      const submitBtn = deepHtmlSearch(document, ".submit-button");
+      if (submitBtn) {
+        const disabledAttr = submitBtn.getAttribute
+          ? submitBtn.getAttribute("disabled")
+          : null;
+        const isDisabled =
+          disabledAttr !== null || submitBtn.classList?.contains("is-disabled");
+        if (!isDisabled) return true;
+      }
+    } catch (e) {}
+    await sleep(100);
+  }
   return false;
 };
 
