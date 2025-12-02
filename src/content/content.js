@@ -655,7 +655,7 @@ const solveQuestion = async (
       }
       console.log("[NetAcad Solver] ✓ Basic question solved");
       if (options.advance) {
-        await advanceToNextQuestion();
+        return await advanceToNextQuestion();
       }
       return true;
     } else if (question.questionType === "match") {
@@ -678,7 +678,7 @@ const solveQuestion = async (
       }
       console.log("[NetAcad Solver] ✓ Match question solved");
       if (options.advance) {
-        await advanceToNextQuestion();
+        return await advanceToNextQuestion();
       }
       return true;
     } else if (question.questionType === "dropdownSelect") {
@@ -718,7 +718,7 @@ const solveQuestion = async (
 
       console.log("[NetAcad Solver] ✓ Dropdown question solved");
       if (options.advance) {
-        await advanceToNextQuestion();
+        return await advanceToNextQuestion();
       }
       return true;
     } else if (question.questionType === "yesNo") {
@@ -735,7 +735,10 @@ const solveQuestion = async (
         const noBtn = deepHtmlSearch(question.questionDiv, ".user_selects_no");
         if (item._shouldBeSelected && yesBtn) yesBtn.click();
         if (!item._shouldBeSelected && noBtn) noBtn.click();
-        if (options.advance) await advanceToNextQuestion();
+        if (options.advance) {
+          const advanced = await advanceToNextQuestion();
+          if (!advanced) return false;
+        }
         console.log("[NetAcad Solver] ✓ Yes/No question solved");
         return true;
       } catch (e) {
@@ -779,7 +782,10 @@ const solveQuestion = async (
           matchEl?.click();
           await sleep(50);
         }
-        if (options.advance) await advanceToNextQuestion();
+        if (options.advance) {
+          const advanced = await advanceToNextQuestion();
+          if (!advanced) return false;
+        }
         console.log("[NetAcad Solver] ✓ Fill blanks question solved");
         return true;
       } catch (e) {
@@ -814,7 +820,10 @@ const solveQuestion = async (
           );
           if (target) target.click();
         });
-        if (options.advance) await advanceToNextQuestion();
+        if (options.advance) {
+          const advanced = await advanceToNextQuestion();
+          if (!advanced) return false;
+        }
         console.log("[NetAcad Solver] ✓ Table dropdown question solved");
         return true;
       } catch (e) {
@@ -851,7 +860,10 @@ const solveQuestion = async (
             await sleep(30);
           }
         }
-        if (options.advance) await advanceToNextQuestion();
+        if (options.advance) {
+          const advanced = await advanceToNextQuestion();
+          if (!advanced) return false;
+        }
         console.log("[NetAcad Solver] ✓ Open text input question solved");
         return true;
       } catch (e) {
@@ -1052,8 +1064,31 @@ const advanceToNextQuestion = async () => {
   const prevQNum = getQuestionNumberFromTitle();
   // Wait up to 3s for submit to become enabled after selection
   await waitForSubmitEnabled(3000);
-  const clicked = clickSubmitOrNext();
-  if (!clicked) return false;
+
+  let clicked = clickSubmitOrNext();
+
+  if (!clicked) {
+    console.log(
+      "[NetAcad Solver] Submit button not found/clicked, trying next block"
+    );
+    // Fallback: try clicking next block
+    if (prevIndex !== null) {
+      const nextBlock = deepHtmlSearch(
+        document,
+        `button.block-button[data-index="${prevIndex + 1}"]`
+      );
+      if (nextBlock) {
+        nextBlock.click();
+        clicked = true;
+      }
+    }
+  }
+
+  if (!clicked) {
+    console.log("[NetAcad Solver] Failed to advance: no button clicked");
+    return false;
+  }
+
   await sleep(100);
   return await waitForNextQuestionLoad(prevIndex, prevQNum, 5000);
 };
@@ -1061,19 +1096,43 @@ const advanceToNextQuestion = async () => {
 // Try to navigate to next question strictly via Submit (no arrow navigation)
 const clickSubmitOrNext = () => {
   try {
-    const submitBtn = deepHtmlSearch(document, ".submit-button");
-    if (submitBtn) {
-      const disabledAttr = submitBtn.getAttribute
-        ? submitBtn.getAttribute("disabled")
-        : null;
-      const isDisabled =
-        disabledAttr !== null || submitBtn.classList?.contains("is-disabled");
-      if (!isDisabled) {
-        submitBtn.click();
+    const selectors = [
+      ".submit-button",
+      ".next-button",
+      "button[aria-label='Next']",
+      ".footer-buttons button.primary",
+      ".btn-next",
+      "button.submit",
+      "button.next",
+    ];
+
+    for (const selector of selectors) {
+      const btn = deepHtmlSearch(document, selector);
+      if (btn && !btn.disabled && !btn.classList.contains("is-disabled")) {
+        console.log("[NetAcad Solver] Clicking button:", selector);
+        btn.click();
         return true;
       }
     }
-  } catch (e) {}
+
+    // Try finding by text content
+    const nextTextBtn =
+      deepHtmlFindByTextContent(document, "Next") ||
+      deepHtmlFindByTextContent(document, "Submit");
+    if (nextTextBtn) {
+      const btn = nextTextBtn.closest("button") || nextTextBtn;
+      if (!btn.disabled && !btn.classList.contains("is-disabled")) {
+        console.log(
+          "[NetAcad Solver] Clicking button by text:",
+          btn.textContent
+        );
+        btn.click();
+        return true;
+      }
+    }
+  } catch (e) {
+    console.error("[NetAcad Solver] Error in clickSubmitOrNext:", e);
+  }
   return false;
 };
 
@@ -1081,14 +1140,20 @@ const waitForSubmitEnabled = async (timeoutMs = 3000) => {
   const start = Date.now();
   while (Date.now() - start < timeoutMs) {
     try {
-      const submitBtn = deepHtmlSearch(document, ".submit-button");
-      if (submitBtn) {
-        const disabledAttr = submitBtn.getAttribute
-          ? submitBtn.getAttribute("disabled")
-          : null;
-        const isDisabled =
-          disabledAttr !== null || submitBtn.classList?.contains("is-disabled");
-        if (!isDisabled) return true;
+      const selectors = [
+        ".submit-button",
+        ".next-button",
+        "button[aria-label='Next']",
+        ".footer-buttons button.primary",
+        ".btn-next",
+        "button.submit",
+        "button.next",
+      ];
+
+      for (const selector of selectors) {
+        const btn = deepHtmlSearch(document, selector);
+        if (btn && !btn.disabled && !btn.classList.contains("is-disabled"))
+          return true;
       }
     } catch (e) {}
     await sleep(100);
