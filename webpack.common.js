@@ -7,6 +7,7 @@ module.exports = {
     background: path.resolve("src/background/background.js"),
     content: path.resolve("src/content/content.js"),
     popup: path.resolve("src/popup/popup.js"),
+    interceptor: path.resolve("src/content/interceptor.js"),
   },
   module: {
     rules: [

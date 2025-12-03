@@ -3,10 +3,8 @@ import browser from "webextension-polyfill";
 console.log("[NetAcad Solver Popup] Initializing...");
 
 let currentTab = null;
-let isAutoSolving = false;
 let questionCount = 0;
 let solvedCount = 0;
-let currentSpeed = 3; // Default: Normal
 
 // Get current tab
 async function getCurrentTab() {
@@ -39,7 +37,7 @@ async function updateStatus() {
       console.log("[NetAcad Solver Popup] Not on NetAcad page");
       setStatus("inactive", "Not on NetAcad");
       document.getElementById("totalCount").textContent = "-";
-      document.getElementById("startStopBtn").disabled = true;
+      document.getElementById("apiSubmitBtn").disabled = true;
       hideMessages();
       return;
     }
@@ -59,15 +57,7 @@ async function updateStatus() {
 
       if (response) {
         questionCount = response.questionCount || 0;
-        isAutoSolving = response.isAutoSolving || false;
         solvedCount = response.currentQuestion || 0;
-
-        console.log(
-          "[NetAcad Solver Popup] Questions:",
-          questionCount,
-          "Solving:",
-          isAutoSolving
-        );
 
         document.getElementById("totalCount").textContent = questionCount;
         document.getElementById("solvedCount").textContent = solvedCount;
@@ -97,20 +87,10 @@ async function updateStatus() {
 
         if (questionCount === 0) {
           setStatus("inactive", "Loading...");
-          document.getElementById("startStopBtn").disabled = true;
-        } else if (isAutoSolving) {
-          setStatus("active", "Solving...");
-          document.getElementById("startStopBtn").disabled = false;
-          document.getElementById("startStopBtn").textContent =
-            "Stop Auto-Solve";
-          document.getElementById("startStopBtn").classList.add("stop");
-          updateProgress(solvedCount, questionCount);
+          document.getElementById("apiSubmitBtn").disabled = true;
         } else {
           setStatus("ready", "Ready");
-          document.getElementById("startStopBtn").disabled = false;
-          document.getElementById("startStopBtn").textContent =
-            "Start Auto-Solve";
-          document.getElementById("startStopBtn").classList.remove("stop");
+          document.getElementById("apiSubmitBtn").disabled = false;
         }
       } else {
         console.log("[NetAcad Solver Popup] No response from content script");
@@ -149,7 +129,6 @@ async function updateStatus() {
 
           if (response) {
             questionCount = response.questionCount || 0;
-            isAutoSolving = response.isAutoSolving || false;
             solvedCount = response.currentQuestion || 0;
 
             document.getElementById("totalCount").textContent = questionCount;
@@ -157,20 +136,10 @@ async function updateStatus() {
 
             if (questionCount === 0) {
               setStatus("inactive", "Loading...");
-              document.getElementById("startStopBtn").disabled = true;
-            } else if (isAutoSolving) {
-              setStatus("active", "Solving...");
-              document.getElementById("startStopBtn").disabled = false;
-              document.getElementById("startStopBtn").textContent =
-                "Stop Auto-Solve";
-              document.getElementById("startStopBtn").classList.add("stop");
-              updateProgress(solvedCount, questionCount);
+              document.getElementById("apiSubmitBtn").disabled = true;
             } else {
               setStatus("ready", "Ready");
-              document.getElementById("startStopBtn").disabled = false;
-              document.getElementById("startStopBtn").textContent =
-                "Start Auto-Solve";
-              document.getElementById("startStopBtn").classList.remove("stop");
+              document.getElementById("apiSubmitBtn").disabled = false;
             }
           } else {
             setStatus("inactive", "Waiting...");
@@ -181,17 +150,17 @@ async function updateStatus() {
             injectError?.message || injectError
           );
           setStatus("inactive", "Loading extension...");
-          document.getElementById("startStopBtn").disabled = true;
+          document.getElementById("apiSubmitBtn").disabled = true;
         }
       } else {
         setStatus("inactive", "Loading extension...");
-        document.getElementById("startStopBtn").disabled = true;
+        document.getElementById("apiSubmitBtn").disabled = true;
       }
     }
   } catch (error) {
     console.error("[NetAcad Solver Popup] Error updating status:", error);
     setStatus("inactive", "Error");
-    document.getElementById("startStopBtn").disabled = true;
+    document.getElementById("apiSubmitBtn").disabled = true;
   }
 }
 
@@ -235,68 +204,42 @@ document.addEventListener("DOMContentLoaded", async () => {
 
   await updateStatus();
 
-  // Speed slider
-  const speedSlider = document.getElementById("speedSlider");
-  const speedValue = document.getElementById("speedValue");
-  const speedLabels = ["Very Slow", "Slow", "Normal", "Fast", "Very Fast"];
-
-  speedSlider.value = currentSpeed;
-  speedValue.textContent = speedLabels[currentSpeed - 1];
-
-  speedSlider.addEventListener("input", (e) => {
-    currentSpeed = parseInt(e.target.value);
-    speedValue.textContent = speedLabels[currentSpeed - 1];
-  });
-
-  // Start/Stop button
-  const startStopBtn = document.getElementById("startStopBtn");
-  startStopBtn.addEventListener("click", async () => {
-    console.log(
-      "[NetAcad Solver Popup] Start/Stop button clicked. Currently solving:",
-      isAutoSolving
-    );
+  // API Submit button
+  const apiSubmitBtn = document.getElementById("apiSubmitBtn");
+  apiSubmitBtn.addEventListener("click", async () => {
+    console.log("[NetAcad Solver Popup] API Submit button clicked");
+    if (
+      !confirm(
+        "This will instantly submit all questions via API. Are you sure?"
+      )
+    )
+      return;
 
     try {
-      if (isAutoSolving) {
-        // Stop auto-solve
-        console.log("[NetAcad Solver Popup] Sending stopAutoSolve message");
-        await browser.tabs.sendMessage(currentTab.id, {
-          action: "stopAutoSolve",
-        });
-        isAutoSolving = false;
-        startStopBtn.textContent = "Start Auto-Solve";
-        startStopBtn.classList.remove("stop");
-        setStatus("ready", "Stopped");
-        showMessage("success", "Auto-solve stopped");
+      apiSubmitBtn.disabled = true;
+      apiSubmitBtn.textContent = "Submitting...";
+
+      const response = await browser.tabs.sendMessage(currentTab.id, {
+        action: "submitViaApi",
+      });
+
+      if (response && response.success) {
+        showMessage("success", "Quiz submitted successfully via API! 🎉");
+        setStatus("ready", "Submitted");
+        // Refresh status to show progress
+        setTimeout(updateStatus, 2000);
       } else {
-        // Start auto-solve
-        console.log(
-          "[NetAcad Solver Popup] Sending startAutoSolve message with speed:",
-          currentSpeed
+        showMessage(
+          "error",
+          "API Submission failed: " + (response?.error || "Unknown error")
         );
-        const response = await browser.tabs.sendMessage(currentTab.id, {
-          action: "startAutoSolve",
-          speed: currentSpeed,
-        });
-
-        console.log("[NetAcad Solver Popup] Start response:", response);
-
-        if (response && response.success) {
-          isAutoSolving = true;
-          startStopBtn.textContent = "Stop Auto-Solve";
-          startStopBtn.classList.add("stop");
-          setStatus("active", "Solving...");
-          showMessage(
-            "success",
-            `Started auto-solving ${questionCount} questions!`
-          );
-        } else {
-          showMessage("error", "Failed to start. Try refreshing the page.");
-        }
       }
     } catch (error) {
-      console.error("[NetAcad Solver Popup] Error:", error);
-      showMessage("error", "Failed to communicate with page. Try refreshing.");
+      console.error("[NetAcad Solver Popup] API Error:", error);
+      showMessage("error", "API Submission error. Check console.");
+    } finally {
+      apiSubmitBtn.disabled = false;
+      apiSubmitBtn.textContent = "🚀 Submit Quiz via API";
     }
   });
 
@@ -318,32 +261,13 @@ document.addEventListener("DOMContentLoaded", async () => {
     if (message.action === "progress") {
       solvedCount = message.current;
       updateProgress(message.current, message.total);
-    } else if (message.action === "autoSolveComplete") {
-      console.log("[NetAcad Solver Popup] Auto-solve complete!");
-      isAutoSolving = false;
-      setStatus("ready", "Complete!");
-      showMessage("success", "All questions solved! 🎉");
-      startStopBtn.textContent = "Start Auto-Solve";
-      startStopBtn.classList.remove("stop");
-      updateProgress(message.questionCount, message.questionCount);
-    } else if (message.action === "autoSolveStarted") {
-      console.log("[NetAcad Solver Popup] Auto-solve started");
-      isAutoSolving = true;
-      setStatus("active", "Solving...");
-    } else if (message.action === "autoSolveStopped") {
-      console.log("[NetAcad Solver Popup] Auto-solve stopped");
-      isAutoSolving = false;
-      setStatus("ready", "Stopped");
     } else if (message.action === "error") {
       console.error(
         "[NetAcad Solver Popup] Error from content:",
         message.message
       );
       showMessage("error", message.message);
-      isAutoSolving = false;
       setStatus("ready", "Error");
-      startStopBtn.textContent = "Start Auto-Solve";
-      startStopBtn.classList.remove("stop");
     }
   });
 
