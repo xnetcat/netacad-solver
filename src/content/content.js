@@ -176,6 +176,26 @@ const setComponents = async (url) => {
       });
 
     components.push(...newComponents);
+
+    // Store components globally in isolated world
+    window.NETACAD_COMPONENTS = components;
+
+    // Also inject into main world for interceptor to access
+    // The interceptor runs in MAIN world, so we need to inject a script
+    try {
+      const script = document.createElement("script");
+      script.textContent = `
+        window.NETACAD_COMPONENTS = ${JSON.stringify(components)};
+      `;
+      (document.head || document.documentElement).appendChild(script);
+      script.remove();
+    } catch (e) {
+      console.warn(
+        "[NetAcad Solver] Could not inject components into main world:",
+        e
+      );
+    }
+
     console.log(
       "[NetAcad Solver] Added",
       newComponents.length,

@@ -6,6 +6,143 @@ const parseJwt = (token) => {
   }
 };
 
+// Helper function to patch state with test question answers
+// This is used both by the interceptor (GET requests) and saveStateViaApi (POST requests)
+export const patchStateWithAnswers = (stateData, components) => {
+  if (!stateData || !components || components.length === 0) {
+    return stateData;
+  }
+
+  const now = new Date().toISOString();
+
+  // Build Components State with answers
+  const componentsStateMap = new Map();
+
+  // First, preserve existing components
+  if (stateData.components && Array.isArray(stateData.components)) {
+    stateData.components.forEach((comp) => {
+      componentsStateMap.set(comp._id, comp);
+    });
+  }
+
+  // Then, update/add our test question components with answers
+  components.forEach((comp) => {
+    const isMcq = comp._component === "mcq";
+
+    // Determine correct answer based on component structure
+    let userAnswer = null;
+    let attemptStates = null;
+
+    if (isMcq && comp._items) {
+      // For MCQ, create boolean array of selected items (correct answers)
+      userAnswer = comp._items.map((item) => !!item._shouldBeSelected);
+
+      // Build attempt states structure matching curl example format
+      attemptStates = [
+        [
+          [1, 0], // [score, maxScore] - 1 point scored
+          [true, true, true, true, true], // [bool flags] - completion flags
+          [userAnswer], // [[answer array]] - wrapped in array
+        ],
+      ];
+    } else if (comp._items && comp._items[0]?._options) {
+      // Handle questions with options (dropdowns, etc.)
+      const correctIndices = [];
+      comp._items.forEach((item) => {
+        if (item._options) {
+          item._options.forEach((opt, optIdx) => {
+            if (opt._isCorrect) {
+              correctIndices.push(optIdx);
+            }
+          });
+        }
+      });
+
+      if (correctIndices.length > 0) {
+        const numOptions = comp._items[0]._options?.length || 4;
+        userAnswer = Array(numOptions)
+          .fill(false)
+          .map((_, idx) => correctIndices.includes(idx));
+      } else {
+        userAnswer = [false, false, false, false];
+      }
+
+      attemptStates = [[[1, 0], [true, true, true, true, true], [userAnswer]]];
+    } else {
+      // Fallback for unknown question types
+      userAnswer = [false, false, false, false];
+      attemptStates = [[[1, 0], [true, true, true, true, true], [userAnswer]]];
+    }
+
+    // Update or create component state with all completion flags
+    componentsStateMap.set(comp._id, {
+      _id: comp._id,
+      _isComplete: true,
+      _isInteractionComplete: true,
+      _isInprogress: true,
+      _userAnswer: userAnswer,
+      _attemptStates: attemptStates,
+      _isSubmitted: true,
+      _score: 1,
+      _isCorrect: true,
+      _attemptsLeft: 0,
+      _attemptsSpent: 1,
+      timestamp: now,
+    });
+  });
+
+  // Convert map back to array
+  stateData.components = Array.from(componentsStateMap.values());
+
+  // Update course completion status
+  if (stateData.course) {
+    stateData.course._isComplete = true;
+    stateData.course._isInteractionComplete = true;
+    stateData.course._isInprogress = true;
+  }
+
+  // Mark all articles, blocks, and contentObjects as complete
+  if (stateData.articles && Array.isArray(stateData.articles)) {
+    stateData.articles.forEach((article) => {
+      article._isComplete = true;
+      article._isInteractionComplete = true;
+      article._isInprogress = true;
+      if (!article.timestamp) {
+        article.timestamp = now;
+      }
+    });
+  }
+
+  if (stateData.blocks && Array.isArray(stateData.blocks)) {
+    stateData.blocks.forEach((block) => {
+      block._isComplete = true;
+      block._isInteractionComplete = true;
+      block._isInprogress = true;
+      if (!block.timestamp) {
+        block.timestamp = now;
+      }
+    });
+  }
+
+  if (stateData.contentObjects && Array.isArray(stateData.contentObjects)) {
+    stateData.contentObjects.forEach((obj) => {
+      obj._isComplete = true;
+      obj._isInteractionComplete = true;
+      obj._isInprogress = true;
+      if (!obj.timestamp) {
+        obj.timestamp = now;
+      }
+    });
+  }
+
+  return stateData;
+};
+
+// Export patching function to window for interceptor to use
+if (typeof window !== "undefined") {
+  window.NETACAD_PATCH_STATE = patchStateWithAnswers;
+}
+
 export const submitQuizViaApi = async (
   components,
   assessmentData = null,
@@ -487,137 +624,8 @@ const saveStateViaApi = async (
     stateData.offlineStorage = {};
   }
 
-  // Build Components State with answers
-  const componentsStateMap = new Map();
-
-  // First, preserve existing components
-  if (stateData.components && Array.isArray(stateData.components)) {
-    stateData.components.forEach((comp) => {
-      componentsStateMap.set(comp._id, comp);
-    });
-  }
-
-  // Then, update/add our test question components with answers
-  components.forEach((comp) => {
-    const isMcq = comp._component === "mcq";
-
-    // Determine correct answer based on component structure
-    let userAnswer = null;
-    let attemptStates = null;
-
-    if (isMcq && comp._items) {
-      // For MCQ, create boolean array of selected items (correct answers)
-      userAnswer = comp._items.map((item) => !!item._shouldBeSelected);
-
-      // Build attempt states structure matching curl example format
-      // Format: [[[score, maxScore], [bool flags], [[answer array]]], ...]
-      // For completed questions, we create a successful attempt
-      attemptStates = [
-        [
-          [1, 0], // [score, maxScore] - 1 point scored
-          [true, true, true, true, true], // [bool flags] - completion flags
-          [userAnswer], // [[answer array]] - wrapped in array
-        ],
-      ];
-    } else if (comp._items && comp._items[0]?._options) {
-      // Handle questions with options (dropdowns, etc.)
-      // Find correct option indices
-      const correctIndices = [];
-      comp._items.forEach((item) => {
-        if (item._options) {
-          item._options.forEach((opt, optIdx) => {
-            if (opt._isCorrect) {
-              correctIndices.push(optIdx);
-            }
-          });
-        }
-      });
-
-      // If we found correct options, use them; otherwise default to all false
-      if (correctIndices.length > 0) {
-        // For questions with options, userAnswer might be an array of indices or booleans
-        // Based on curl example, it seems to be boolean arrays
-        // Create a boolean array matching the number of options
-        const numOptions = comp._items[0]._options?.length || 4;
-        userAnswer = Array(numOptions)
-          .fill(false)
-          .map((_, idx) => correctIndices.includes(idx));
-      } else {
-        // Default to 4 false values if we can't determine
-        userAnswer = [false, false, false, false];
-      }
-
-      // Build attempt states for option-based questions
-      attemptStates = [[[1, 0], [true, true, true, true, true], [userAnswer]]];
-    } else {
-      // Fallback for unknown question types
-      userAnswer = [false, false, false, false];
-      attemptStates = [[[1, 0], [true, true, true, true, true], [userAnswer]]];
-    }
-
-    // Update or create component state with all completion flags
-    componentsStateMap.set(comp._id, {
-      _id: comp._id,
-      _isComplete: true,
-      _isInteractionComplete: true,
-      _isInprogress: true,
-      _userAnswer: userAnswer,
-      _attemptStates: attemptStates,
-      _isSubmitted: true,
-      _score: 1, // Score for correct answer
-      _isCorrect: true,
-      _attemptsLeft: 0,
-      _attemptsSpent: 1,
-      timestamp: now,
-    });
-  });
-
-  // Convert map back to array
-  stateData.components = Array.from(componentsStateMap.values());
-
-  // Update course completion status
-  if (stateData.course) {
-    stateData.course._isComplete = true;
-    stateData.course._isInteractionComplete = true;
-    stateData.course._isInprogress = true;
-  }
-
-  // Update articles, blocks, and contentObjects to mark as complete
-  // Mark all articles as complete
-  if (stateData.articles && Array.isArray(stateData.articles)) {
-    stateData.articles.forEach((article) => {
-      article._isComplete = true;
-      article._isInteractionComplete = true;
-      article._isInprogress = true;
-      if (!article.timestamp) {
-        article.timestamp = now;
-      }
-    });
-  }
-
-  // Mark all blocks as complete
-  if (stateData.blocks && Array.isArray(stateData.blocks)) {
-    stateData.blocks.forEach((block) => {
-      block._isComplete = true;
-      block._isInteractionComplete = true;
-      block._isInprogress = true;
-      if (!block.timestamp) {
-        block.timestamp = now;
-      }
-    });
-  }
-
-  // Mark all contentObjects as complete
-  if (stateData.contentObjects && Array.isArray(stateData.contentObjects)) {
-    stateData.contentObjects.forEach((obj) => {
-      obj._isComplete = true;
-      obj._isInteractionComplete = true;
-      obj._isInprogress = true;
-      if (!obj.timestamp) {
-        obj.timestamp = now;
-      }
-    });
-  }
+  // Patch state with answers using the shared function
+  stateData = patchStateWithAnswers(stateData, components);
 
   // 3. Save Patched State (POST is standard for xAPI state updates)
   const stateUrl = `${baseUrl}?activityId=${encodeURIComponent(
