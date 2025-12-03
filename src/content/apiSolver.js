@@ -6,8 +6,15 @@ const parseJwt = (token) => {
   }
 };
 
-export const submitQuizViaApi = async (components, overrides = {}) => {
-  console.log("[NetAcad API Solver] Starting API submission...");
+export const submitQuizViaApi = async (
+  components,
+  assessmentData = null,
+  overrides = {}
+) => {
+  console.log(
+    "[NetAcad API Solver] Starting API submission...",
+    assessmentData
+  );
 
   // 1. Get Auth Token
   let token = localStorage.getItem("AuthToken");
@@ -154,24 +161,61 @@ export const submitQuizViaApi = async (components, overrides = {}) => {
     if (!response) continue;
 
     // Construct the Activity ID
-    // User curl: https://pe1-m4-v1#/id/GUID
-    // We need the prefix.
-    // Let's try to infer it from the component._id if it's a full URL,
-    // or assume a standard prefix if we can't find it.
-    // Actually, component._id might BE the GUID.
-    // Let's try to find the prefix from the first component if possible.
-
     let activityId = component._id;
     if (!activityId.startsWith("http")) {
-      // Fallback: try to construct it.
-      // We really need the prefix.
-      // Let's look at the iframe src again: .../content/pe1/1.0/...
-      // Maybe "https://pe1-m4-v1" is standard?
-      // Or maybe we can just use the GUID and hope? No, xAPI needs exact ID.
-
-      // HACK: Use a placeholder or try to find it in component metadata
-      // component._base?
       activityId = `${courseIdPrefix}#/id/${component._id}`;
+    }
+
+    const definition = {
+      type: "http://adlnet.gov/expapi/activities/question",
+      interactionType: questionType, // 'choice', etc.
+      name: { "en-US": component.title || "Question" },
+      description: { "en-US": component.body || "" },
+    };
+
+    // Add ravennaSourceID if available
+    if (component.ravennaSourceID || component._ravennaSourceID) {
+      definition.extensions = {
+        "https://www.netacad.com/ravennaSourceID":
+          component.ravennaSourceID || component._ravennaSourceID,
+      };
+    }
+
+    // Construct Context Activities
+    const contextActivities = {
+      grouping: [
+        {
+          objectType: "Activity",
+          id: courseIdPrefix, // e.g. https://pe1-m2-v1
+          definition: {
+            type: "http://adlnet.gov/expapi/activities/course",
+          },
+        },
+      ],
+    };
+
+    if (assessmentData && assessmentData.id) {
+      // Add Lesson Activity (Grouping)
+      contextActivities.grouping.push({
+        objectType: "Activity",
+        id: `${courseIdPrefix}#/id/${assessmentData.id}`,
+        definition: {
+          name: { "en-US": assessmentData.title || "Module Test" },
+          type: "http://adlnet.gov/expapi/activities/lesson",
+        },
+      });
+
+      // Add Assessment Activity (Parent)
+      contextActivities.parent = [
+        {
+          objectType: "Activity",
+          id: `${courseIdPrefix}#/assessment/${assessmentData.id}`,
+          definition: {
+            name: { "en-US": assessmentData.id },
+            type: "http://adlnet.gov/expapi/activities/assessment",
+          },
+        },
+      ];
     }
 
     const statement = {
@@ -187,10 +231,7 @@ export const submitQuizViaApi = async (components, overrides = {}) => {
       object: {
         objectType: "Activity",
         id: activityId,
-        definition: {
-          type: "http://adlnet.gov/expapi/activities/question",
-          interactionType: questionType, // 'choice', etc.
-        },
+        definition: definition,
       },
       result: {
         score: { raw: 1 }, // Assuming 1 point
@@ -210,17 +251,7 @@ export const submitQuizViaApi = async (components, overrides = {}) => {
           "https://www.netacad.com/user/id": userMbox,
           "https://www.netacad.com/course/module": parseInt(moduleNumber, 10),
         },
-        contextActivities: {
-          grouping: [
-            {
-              objectType: "Activity",
-              id: courseIdPrefix, // e.g. https://pe1-m2-v1
-              definition: {
-                type: "http://adlnet.gov/expapi/activities/course",
-              },
-            },
-          ],
-        },
+        contextActivities: contextActivities,
       },
       timestamp: timestamp,
     };
@@ -287,45 +318,161 @@ export const submitQuizViaApi = async (components, overrides = {}) => {
     return { success: false, error: e.message };
   }
 
-  // 5. Update Service Progress
-  // Service ID is in the top URL: launch?id=...
+  // ... (existing code)
+  // 5. Save Course State (The "State" Request)
+  // This is crucial for updating the visual progress in the course player.
+  try {
+    console.log("[NetAcad API Solver] Attempting to save course state...");
+    if (!token) {
+      console.warn(
+        "[NetAcad API Solver] No token available for state save, attempting without (or relying on cookies)..."
+      );
+    }
+    await saveStateViaApi(
+      launchService,
+      launchKey,
+      courseIdPrefix,
+      { mbox: userMbox, name: userName },
+      components,
+      token
+    );
+  } catch (e) {
+    console.error("[NetAcad API Solver] Error saving state:", e);
+  }
+
+  // 6. Update Service Progress (GraphQL) - DISABLED as per user request
+  /*
   const urlParamsTop = new URLSearchParams(window.location.search);
   const serviceIdForProgress = urlParamsTop.get("id");
 
   if (serviceIdForProgress) {
-    const graphqlUrl = "https://api.netacad.com/api"; // From sessionStorage or hardcoded
-    const mutation = {
-      operationName: "updateServiceProgress",
-      variables: {
-        serviceId: serviceIdForProgress,
-        progress: {
-          // We need currentInViewId? Maybe optional?
-          // sourceUpdatedOn: new Date().toISOString()
-          sourceUpdatedOn: new Date().toISOString(),
-        },
-      },
-      query: `mutation updateServiceProgress($serviceId: ID!, $progress: ProgressInput!) {
-            updateServiceProgress(serviceId: $serviceId, progress: $progress) {
-                id
-                __typename
-            }
-          }`,
-    };
-
-    try {
-      await fetch(graphqlUrl, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${token}`,
-        },
-        body: JSON.stringify(mutation),
-      });
-      console.log("[NetAcad API Solver] Service progress updated");
-    } catch (e) {
-      console.error("[NetAcad API Solver] Error updating progress:", e);
-    }
+    // ... (GraphQL code commented out)
   }
+  */
 
   return { success: true };
+};
+
+// Helper to save state
+const saveStateViaApi = async (
+  launchService,
+  launchKey,
+  activityId,
+  agent,
+  components,
+  token
+) => {
+  const agentParam = JSON.stringify({
+    objectType: "Agent",
+    mbox: agent.mbox,
+    name: agent.name,
+  });
+
+  const baseUrl = `${launchService}data/${launchKey}/activities/state`;
+
+  // Ensure token is valid or undefined (not string "undefined")
+  const authHeader =
+    token && token !== "undefined" ? `Bearer ${token}` : undefined;
+
+  const headers = {
+    "Content-Type": "application/json",
+    "X-Experience-API-Version": "1.0.1",
+  };
+  if (authHeader) {
+    headers["Authorization"] = authHeader;
+  }
+
+  // 1. Get List of State IDs
+  const listUrl = `${baseUrl}?activityId=${encodeURIComponent(
+    activityId
+  )}&agent=${encodeURIComponent(agentParam)}`;
+
+  console.log("[NetAcad API Solver] Fetching state IDs from:", listUrl);
+  const listRes = await fetch(listUrl, { headers });
+  if (!listRes.ok) throw new Error(`Failed to list states: ${listRes.status}`);
+
+  const stateIds = await listRes.json();
+  console.log("[NetAcad API Solver] Found state IDs:", stateIds);
+
+  // Find the main state (usually ends with _state_data)
+  const stateId = stateIds.find((id) => id.endsWith("_state_data"));
+  if (!stateId) {
+    console.warn(
+      "[NetAcad API Solver] No standard state ID found. Aborting state save."
+    );
+    return;
+  }
+
+  // 2. Get Current State Data
+  const stateUrl = `${baseUrl}?activityId=${encodeURIComponent(
+    activityId
+  )}&agent=${encodeURIComponent(agentParam)}&stateId=${encodeURIComponent(
+    stateId
+  )}`;
+
+  console.log("[NetAcad API Solver] Fetching state data from:", stateUrl);
+  const stateRes = await fetch(stateUrl, { headers });
+  if (!stateRes.ok) throw new Error(`Failed to get state: ${stateRes.status}`);
+
+  const stateData = await stateRes.json();
+
+  // 3. Modify State Data
+  const now = new Date().toISOString();
+
+  // Mark Course as Complete
+  if (stateData.course) {
+    stateData.course._isComplete = true;
+    stateData.course._isInteractionComplete = true;
+    stateData.course._isInprogress = false;
+  }
+
+  // Mark Content Objects (Modules) as Complete
+  if (stateData.contentObjects) {
+    stateData.contentObjects.forEach((obj) => {
+      obj._isComplete = true;
+      obj._isInteractionComplete = true;
+      obj._isInprogress = false;
+      obj.timestamp = now;
+    });
+  }
+
+  // Update Components (Questions)
+  if (stateData.components) {
+    stateData.components.forEach((compState) => {
+      const compDef = components.find((c) => c._id === compState._id);
+
+      // Always mark as complete/correct
+      compState._isComplete = true;
+      compState._isInteractionComplete = true;
+      compState._isInprogress = false;
+      compState._isCorrect = true;
+      compState._score = 100; // Max score
+      compState.timestamp = now;
+
+      // Clear attempt states to remove "failed" history
+      compState._attemptStates = null;
+      compState._attemptsSpent = (compState._attemptsSpent || 0) + 1;
+
+      if (compDef && compDef._items) {
+        // Construct User Answer (Boolean Array for MCQ)
+        if (compDef._component === "mcq") {
+          const userAnswer = compDef._items.map(
+            (item) => !!item._shouldBeSelected
+          );
+          compState._userAnswer = userAnswer;
+        }
+      }
+    });
+  }
+
+  // 4. Save Modified State
+  console.log("[NetAcad API Solver] Saving modified state...", stateData);
+  const saveRes = await fetch(stateUrl, {
+    method: "POST",
+    headers: headers,
+    body: JSON.stringify(stateData),
+  });
+
+  if (!saveRes.ok) throw new Error(`Failed to save state: ${saveRes.status}`);
+  console.log("[NetAcad API Solver] State saved successfully!");
 };

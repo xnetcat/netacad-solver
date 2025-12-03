@@ -91,7 +91,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         return true;
       }
 
-      submitQuizViaApi(components)
+      submitQuizViaApi(components, window.NETACAD_ASSESSMENT_DATA)
         .then((result) => sendResponse(result))
         .catch((e) => sendResponse({ success: false, error: e.message }));
       return true; // async response
@@ -123,6 +123,45 @@ const setComponents = async (url) => {
     }
 
     let json = await res.json();
+
+    // 1. Find Assessment Metadata
+    // We need the Assessment ID (GUID) and Title for xAPI context.
+    // Strategy: Find the component that is the parent of the questions.
+    const questions = json.filter((c) => c._items && c._items.length > 0);
+    let assessmentId = null;
+    let assessmentTitle = "Unknown Assessment";
+
+    if (questions.length > 0) {
+      const parentId = questions[0]._parentId;
+      if (parentId) {
+        const parent = json.find((c) => c._id === parentId);
+        if (parent) {
+          assessmentId = parent._id;
+          assessmentTitle = parent.title || parent._title || assessmentTitle;
+        }
+      }
+    }
+
+    // Fallback: Look for a component with "assessment" or "test" in title if no parentId
+    if (!assessmentId) {
+      const assessment = json.find(
+        (c) =>
+          (c.title && /test|exam|quiz|assessment/i.test(c.title)) ||
+          c._component === "assessment"
+      );
+      if (assessment) {
+        assessmentId = assessment._id;
+        assessmentTitle =
+          assessment.title || assessment._title || assessmentTitle;
+      }
+    }
+
+    // Store globally for the solver
+    window.NETACAD_ASSESSMENT_DATA = {
+      id: assessmentId,
+      title: assessmentTitle,
+    };
+
     const newComponents = json
       .filter((component) => component._items)
       .filter(
@@ -141,7 +180,9 @@ const setComponents = async (url) => {
       "[NetAcad Solver] Added",
       newComponents.length,
       "components. Total:",
-      components.length
+      components.length,
+      "Assessment:",
+      window.NETACAD_ASSESSMENT_DATA
     );
   } catch (e) {
     console.error("[NetAcad Solver] Error fetching components:", e);
