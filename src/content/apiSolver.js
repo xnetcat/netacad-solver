@@ -54,6 +54,13 @@ export const submitQuizViaApi = async (components, overrides = {}) => {
     } catch (e) {}
   }
 
+  // Fix URL construction for NetAcad:
+  // Input: https://www.netacad.com/adl/content/
+  // Desired: https://www.netacad.com/adl/data/...
+  if (launchService && launchService.includes("/content/")) {
+    launchService = launchService.replace("/content/", "/");
+  }
+
   let courseIdPrefix = "https://pe1-m0-v1"; // Default fallback
   if (moduleNumber) {
     courseIdPrefix = `https://pe1-m${moduleNumber}-v1`;
@@ -72,6 +79,19 @@ export const submitQuizViaApi = async (components, overrides = {}) => {
   // 3. Construct Statements
   const statements = [];
   const timestamp = new Date().toISOString();
+
+  // Helper to get param from top window or current
+  const getUrlParam = (name) => {
+    let val = new URLSearchParams(window.location.search).get(name);
+    if (!val && window.top !== window) {
+      try {
+        val = new URLSearchParams(window.top.location.search).get(name);
+      } catch (e) {}
+    }
+    return val;
+  };
+
+  const serviceId = getUrlParam("id") || "unknown-service-id";
 
   for (const component of components) {
     // We only care about questions
@@ -179,8 +199,28 @@ export const submitQuizViaApi = async (components, overrides = {}) => {
         response: response,
       },
       context: {
-        // We might need context extensions, but let's try minimal first
-        // User curl had lots of extensions.
+        extensions: {
+          "https://www.netacad.com/service/type": "course",
+          "https://www.netacad.com/service/id": serviceId,
+          "https://www.netacad.com/schema/version": "1.0",
+          "https://www.netacad.com/course/name":
+            courseIdPrefix.split("://")[1]?.split("-")[0] || "pe1", // Extract 'pe1' from 'https://pe1-m2-v1'
+          "https://www.netacad.com/course/version": "1.0",
+          "https://www.netacad.com/course/language": "en-US",
+          "https://www.netacad.com/user/id": userMbox,
+          "https://www.netacad.com/course/module": parseInt(moduleNumber, 10),
+        },
+        contextActivities: {
+          grouping: [
+            {
+              objectType: "Activity",
+              id: courseIdPrefix, // e.g. https://pe1-m2-v1
+              definition: {
+                type: "http://adlnet.gov/expapi/activities/course",
+              },
+            },
+          ],
+        },
       },
       timestamp: timestamp,
     };
@@ -200,30 +240,45 @@ export const submitQuizViaApi = async (components, overrides = {}) => {
     // User curl data was `[...]` (array).
     // So we can send batch.
 
+    // Check if token is "undefined" string or null
+    let authHeader = `Bearer ${token}`;
+    if (!token || token === "undefined") {
+      authHeader = undefined;
+    }
+
+    const headers = {
+      "Content-Type": "application/json",
+      "X-Experience-API-Version": "1.0.1",
+    };
+
+    if (authHeader) {
+      headers["Authorization"] = authHeader;
+    }
+
     const res = await fetch(statementsUrl, {
       method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${token}`, // User curl had undefined, but let's try Bearer first, or omit if undefined
-        "X-Experience-API-Version": "1.0.1",
-      },
+      headers: headers,
       body: JSON.stringify(statements),
     });
 
     if (!res.ok) {
-      // Try without Authorization header (cookie based)
-      console.log(
-        "[NetAcad API Solver] Failed with Bearer, trying cookie auth..."
-      );
-      const res2 = await fetch(statementsUrl, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "X-Experience-API-Version": "1.0.1",
-        },
-        body: JSON.stringify(statements),
-      });
-      if (!res2.ok) throw new Error(`Status ${res2.status}`);
+      // If we failed with auth header, try without (cookie based) if we sent it
+      if (authHeader) {
+        console.log(
+          "[NetAcad API Solver] Failed with Bearer, trying cookie auth..."
+        );
+        const res2 = await fetch(statementsUrl, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "X-Experience-API-Version": "1.0.1",
+          },
+          body: JSON.stringify(statements),
+        });
+        if (!res2.ok) throw new Error(`Status ${res2.status}`);
+      } else {
+        throw new Error(`Status ${res.status}`);
+      }
     }
 
     console.log("[NetAcad API Solver] Statements sent successfully");
@@ -235,14 +290,14 @@ export const submitQuizViaApi = async (components, overrides = {}) => {
   // 5. Update Service Progress
   // Service ID is in the top URL: launch?id=...
   const urlParamsTop = new URLSearchParams(window.location.search);
-  const serviceId = urlParamsTop.get("id");
+  const serviceIdForProgress = urlParamsTop.get("id");
 
-  if (serviceId) {
+  if (serviceIdForProgress) {
     const graphqlUrl = "https://api.netacad.com/api"; // From sessionStorage or hardcoded
     const mutation = {
       operationName: "updateServiceProgress",
       variables: {
-        serviceId: serviceId,
+        serviceId: serviceIdForProgress,
         progress: {
           // We need currentInViewId? Maybe optional?
           // sourceUpdatedOn: new Date().toISOString()

@@ -20,10 +20,6 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     typeof request.componentsUrl === "string" &&
     !componentUrls.includes(request.componentsUrl)
   ) {
-    // If we are the quiz frame, we definitely want this.
-    // If we are top frame but not quiz frame, we might ignore it if we expect the iframe to handle it.
-    // But to be safe, let's allow any frame to load it, but we prefer the quiz frame.
-
     console.log("[NetAcad Solver] New components URL:", request.componentsUrl);
     componentUrls.push(request.componentsUrl);
     setComponents(request.componentsUrl)
@@ -33,8 +29,26 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
       .catch((e) =>
         console.error("[NetAcad Solver] Error handling componentsUrl:", e)
       );
-    // We don't return here, we let the message fall through or we don't send response?
-    // The background script doesn't expect a response for this message.
+    return;
+  }
+
+  // Handle launchUrl from background
+  if (request?.launchUrl && typeof request.launchUrl === "string") {
+    console.log(
+      "[NetAcad Solver] Received launch URL from background:",
+      request.launchUrl
+    );
+    const match = request.launchUrl.match(
+      /\/adl\/content\/launch\/([a-f0-9-]+)/i
+    );
+    if (match && match[1]) {
+      console.log("[NetAcad Solver] Extracted xAPILaunchKey:", match[1]);
+      try {
+        sessionStorage.setItem("xAPILaunchKey", match[1]);
+        const service = request.launchUrl.split("launch/")[0];
+        sessionStorage.setItem("xAPILaunchService", service);
+      } catch (e) {}
+    }
     return;
   }
 
@@ -44,9 +58,16 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
       // Only respond if we are the quiz frame or have components
       if (!isQuizFrame && components.length === 0) return;
 
+      // Check if we have the launch key in URL or sessionStorage
+      const urlParams = new URLSearchParams(window.location.search);
+      const hasKey =
+        urlParams.has("xAPILaunchKey") ||
+        !!sessionStorage.getItem("xAPILaunchKey");
+
       const status = {
         questionCount: components.length,
-        isAutoSolving: false, // Legacy support
+        hasLaunchKey: hasKey,
+        isAutoSolving: false,
         currentQuestion: 0,
         activeQuestion: 0,
         remaining: components.length,
