@@ -61,11 +61,20 @@ export const submitQuizViaApi = async (
     } catch (e) {}
   }
 
-  // Fix URL construction for NetAcad:
-  // Input: https://www.netacad.com/adl/content/
-  // Desired: https://www.netacad.com/adl/data/...
+  // Clean launchService URL to ensure it points to the data endpoint root
+  // Usually it comes as .../adl/content/ but we need .../adl/
   if (launchService && launchService.includes("/content/")) {
     launchService = launchService.replace("/content/", "/");
+  }
+
+  if (!launchKey || !launchService) {
+    console.error(
+      "[NetAcad API Solver] Missing xAPILaunchKey or xAPILaunchService"
+    );
+    return {
+      success: false,
+      error: "Missing launch parameters. Please refresh the page.",
+    };
   }
 
   let courseIdPrefix = "https://pe1-m0-v1"; // Default fallback
@@ -374,105 +383,265 @@ const saveStateViaApi = async (
   const authHeader =
     token && token !== "undefined" ? `Bearer ${token}` : undefined;
 
+  // Headers for GET requests (No Content-Type)
   const headers = {
-    "Content-Type": "application/json",
     "X-Experience-API-Version": "1.0.1",
   };
   if (authHeader) {
     headers["Authorization"] = authHeader;
   }
 
-  // 1. Get List of State IDs
+  // Headers for POST/PATCH requests (With Content-Type)
+  const postHeaders = {
+    ...headers,
+    "Content-Type": "application/json",
+  };
+
+  // 1. Get List of State IDs and fetch current state
+  let stateId = null;
+  let currentState = null;
   const listUrl = `${baseUrl}?activityId=${encodeURIComponent(
     activityId
   )}&agent=${encodeURIComponent(agentParam)}`;
 
   console.log("[NetAcad API Solver] Fetching state IDs from:", listUrl);
-  const listRes = await fetch(listUrl, { headers });
-  if (!listRes.ok) throw new Error(`Failed to list states: ${listRes.status}`);
 
-  const stateIds = await listRes.json();
-  console.log("[NetAcad API Solver] Found state IDs:", stateIds);
+  try {
+    const listRes = await fetch(listUrl, {
+      headers,
+      credentials: "include", // CRITICAL: Send cookies (adlsession)
+    });
 
-  // Find the main state (usually ends with _state_data)
-  const stateId = stateIds.find((id) => id.endsWith("_state_data"));
-  if (!stateId) {
-    console.warn(
-      "[NetAcad API Solver] No standard state ID found. Aborting state save."
-    );
-    return;
+    if (listRes.ok) {
+      const stateIds = await listRes.json();
+      console.log("[NetAcad API Solver] Found state IDs:", stateIds);
+      stateId = stateIds.find((id) => id.endsWith("_state_data"));
+
+      // If we found a state ID, fetch the current state
+      if (stateId) {
+        const getStateUrl = `${baseUrl}?activityId=${encodeURIComponent(
+          activityId
+        )}&agent=${encodeURIComponent(agentParam)}&stateId=${encodeURIComponent(
+          stateId
+        )}`;
+
+        console.log(
+          "[NetAcad API Solver] Fetching current state from:",
+          getStateUrl
+        );
+        const getStateRes = await fetch(getStateUrl, {
+          headers,
+          credentials: "include", // CRITICAL: Send cookies
+        });
+        if (getStateRes.ok) {
+          currentState = await getStateRes.json();
+          console.log(
+            "[NetAcad API Solver] Fetched current state:",
+            currentState
+          );
+        } else {
+          console.warn(
+            "[NetAcad API Solver] Failed to fetch current state, will create new one.",
+            getStateRes.status
+          );
+        }
+      }
+    } else {
+      console.warn(
+        "[NetAcad API Solver] Failed to list states, will create new one.",
+        listRes.status
+      );
+    }
+  } catch (e) {
+    console.warn("[NetAcad API Solver] Error listing/fetching states:", e);
   }
 
-  // 2. Get Current State Data
+  // If no state ID found, generate one
+  if (!stateId) {
+    stateId = `${crypto.randomUUID().replace(/-/g, "")}_state_data`;
+    console.log("[NetAcad API Solver] Generated new state ID:", stateId);
+  }
+
+  // 2. Build patched state with all questions marked as completed
+  const now = new Date().toISOString();
+
+  // Start with current state or create base structure
+  const stateData = currentState
+    ? { ...currentState }
+    : {
+        course: {
+          _id: activityId, // Fallback to activityId if no current state
+          _isComplete: false,
+          _isInteractionComplete: false,
+          _isInprogress: true,
+        },
+        contentObjects: [],
+        articles: [],
+        blocks: [],
+        components: [],
+        offlineStorage: {},
+      };
+
+  // Ensure offlineStorage exists (preserve from current state if available)
+  if (!stateData.offlineStorage) {
+    stateData.offlineStorage = {};
+  }
+
+  // Build Components State with answers
+  const componentsStateMap = new Map();
+
+  // First, preserve existing components
+  if (stateData.components && Array.isArray(stateData.components)) {
+    stateData.components.forEach((comp) => {
+      componentsStateMap.set(comp._id, comp);
+    });
+  }
+
+  // Then, update/add our test question components with answers
+  components.forEach((comp) => {
+    const isMcq = comp._component === "mcq";
+
+    // Determine correct answer based on component structure
+    let userAnswer = null;
+    let attemptStates = null;
+
+    if (isMcq && comp._items) {
+      // For MCQ, create boolean array of selected items (correct answers)
+      userAnswer = comp._items.map((item) => !!item._shouldBeSelected);
+
+      // Build attempt states structure matching curl example format
+      // Format: [[[score, maxScore], [bool flags], [[answer array]]], ...]
+      // For completed questions, we create a successful attempt
+      attemptStates = [
+        [
+          [1, 0], // [score, maxScore] - 1 point scored
+          [true, true, true, true, true], // [bool flags] - completion flags
+          [userAnswer], // [[answer array]] - wrapped in array
+        ],
+      ];
+    } else if (comp._items && comp._items[0]?._options) {
+      // Handle questions with options (dropdowns, etc.)
+      // Find correct option indices
+      const correctIndices = [];
+      comp._items.forEach((item) => {
+        if (item._options) {
+          item._options.forEach((opt, optIdx) => {
+            if (opt._isCorrect) {
+              correctIndices.push(optIdx);
+            }
+          });
+        }
+      });
+
+      // If we found correct options, use them; otherwise default to all false
+      if (correctIndices.length > 0) {
+        // For questions with options, userAnswer might be an array of indices or booleans
+        // Based on curl example, it seems to be boolean arrays
+        // Create a boolean array matching the number of options
+        const numOptions = comp._items[0]._options?.length || 4;
+        userAnswer = Array(numOptions)
+          .fill(false)
+          .map((_, idx) => correctIndices.includes(idx));
+      } else {
+        // Default to 4 false values if we can't determine
+        userAnswer = [false, false, false, false];
+      }
+
+      // Build attempt states for option-based questions
+      attemptStates = [[[1, 0], [true, true, true, true, true], [userAnswer]]];
+    } else {
+      // Fallback for unknown question types
+      userAnswer = [false, false, false, false];
+      attemptStates = [[[1, 0], [true, true, true, true, true], [userAnswer]]];
+    }
+
+    // Update or create component state with all completion flags
+    componentsStateMap.set(comp._id, {
+      _id: comp._id,
+      _isComplete: true,
+      _isInteractionComplete: true,
+      _isInprogress: true,
+      _userAnswer: userAnswer,
+      _attemptStates: attemptStates,
+      _isSubmitted: true,
+      _score: 1, // Score for correct answer
+      _isCorrect: true,
+      _attemptsLeft: 0,
+      _attemptsSpent: 1,
+      timestamp: now,
+    });
+  });
+
+  // Convert map back to array
+  stateData.components = Array.from(componentsStateMap.values());
+
+  // Update course completion status
+  if (stateData.course) {
+    stateData.course._isComplete = true;
+    stateData.course._isInteractionComplete = true;
+    stateData.course._isInprogress = true;
+  }
+
+  // Update articles, blocks, and contentObjects to mark as complete
+  // Mark all articles as complete
+  if (stateData.articles && Array.isArray(stateData.articles)) {
+    stateData.articles.forEach((article) => {
+      article._isComplete = true;
+      article._isInteractionComplete = true;
+      article._isInprogress = true;
+      if (!article.timestamp) {
+        article.timestamp = now;
+      }
+    });
+  }
+
+  // Mark all blocks as complete
+  if (stateData.blocks && Array.isArray(stateData.blocks)) {
+    stateData.blocks.forEach((block) => {
+      block._isComplete = true;
+      block._isInteractionComplete = true;
+      block._isInprogress = true;
+      if (!block.timestamp) {
+        block.timestamp = now;
+      }
+    });
+  }
+
+  // Mark all contentObjects as complete
+  if (stateData.contentObjects && Array.isArray(stateData.contentObjects)) {
+    stateData.contentObjects.forEach((obj) => {
+      obj._isComplete = true;
+      obj._isInteractionComplete = true;
+      obj._isInprogress = true;
+      if (!obj.timestamp) {
+        obj.timestamp = now;
+      }
+    });
+  }
+
+  // 3. Save Patched State (POST is standard for xAPI state updates)
   const stateUrl = `${baseUrl}?activityId=${encodeURIComponent(
     activityId
   )}&agent=${encodeURIComponent(agentParam)}&stateId=${encodeURIComponent(
     stateId
   )}`;
 
-  console.log("[NetAcad API Solver] Fetching state data from:", stateUrl);
-  const stateRes = await fetch(stateUrl, { headers });
-  if (!stateRes.ok) throw new Error(`Failed to get state: ${stateRes.status}`);
-
-  const stateData = await stateRes.json();
-
-  // 3. Modify State Data
-  const now = new Date().toISOString();
-
-  // Mark Course as Complete
-  if (stateData.course) {
-    stateData.course._isComplete = true;
-    stateData.course._isInteractionComplete = true;
-    stateData.course._isInprogress = false;
-  }
-
-  // Mark Content Objects (Modules) as Complete
-  if (stateData.contentObjects) {
-    stateData.contentObjects.forEach((obj) => {
-      obj._isComplete = true;
-      obj._isInteractionComplete = true;
-      obj._isInprogress = false;
-      obj.timestamp = now;
-    });
-  }
-
-  // Update Components (Questions)
-  if (stateData.components) {
-    stateData.components.forEach((compState) => {
-      const compDef = components.find((c) => c._id === compState._id);
-
-      // Always mark as complete/correct
-      compState._isComplete = true;
-      compState._isInteractionComplete = true;
-      compState._isInprogress = false;
-      compState._isCorrect = true;
-      compState._score = 100; // Max score
-      compState.timestamp = now;
-
-      // Clear attempt states to remove "failed" history
-      compState._attemptStates = null;
-      compState._attemptsSpent = (compState._attemptsSpent || 0) + 1;
-
-      if (compDef && compDef._items) {
-        // Construct User Answer (Boolean Array for MCQ)
-        if (compDef._component === "mcq") {
-          const userAnswer = compDef._items.map(
-            (item) => !!item._shouldBeSelected
-          );
-          compState._userAnswer = userAnswer;
-        }
-      }
-    });
-  }
-
-  // 4. Save Modified State
-  console.log("[NetAcad API Solver] Saving modified state...", stateData);
+  console.log(
+    "[NetAcad API Solver] Saving patched state with answers...",
+    stateData
+  );
   const saveRes = await fetch(stateUrl, {
-    method: "POST",
-    headers: headers,
+    method: "POST", // POST is standard for xAPI state updates (creates/updates)
+    headers: postHeaders,
     body: JSON.stringify(stateData),
+    credentials: "include", // CRITICAL: Send cookies
   });
 
-  if (!saveRes.ok) throw new Error(`Failed to save state: ${saveRes.status}`);
-  console.log("[NetAcad API Solver] State saved successfully!");
+  if (!saveRes.ok) {
+    const errText = await saveRes.text();
+    throw new Error(`Failed to save state: ${saveRes.status} ${errText}`);
+  }
+  console.log(
+    "[NetAcad API Solver] State saved successfully with all questions marked as completed!"
+  );
 };
